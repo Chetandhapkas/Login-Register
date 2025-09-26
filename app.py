@@ -1,19 +1,46 @@
+import os
+from flask import Flask, render_template, request, session, flash, redirect, url_for
+
+# For databases
 import sqlite3
-from flask import Flask, render_template, request
+import psycopg2
 
 app = Flask(__name__)
+# ---------------- SECRET KEY ----------------
+# Use environment variable SECRET_KEY if set, otherwise default to 'mysecret123'
+app.secret_key = os.environ.get("SECRET_KEY", "mysecret123")
 
-# ---------------- Database Setup ----------------
+# ---------------- Database Connection ----------------
+def get_conn():
+    """Return a database connection. Use PostgreSQL if DATABASE_URL is set, otherwise local SQLite."""
+    db_url = os.environ.get("DATABASE_URL")  # Provided by Render
+    if db_url:
+        return psycopg2.connect(db_url)
+    else:
+        return sqlite3.connect('users.db')
+
 def init_db():
-    conn = sqlite3.connect('users.db')
+    conn = get_conn()
     c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
-    ''')
+    # Different SQL for SQLite vs PostgreSQL for AUTOINCREMENT/serial
+    if os.environ.get("DATABASE_URL"):
+        # PostgreSQL
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        ''')
+    else:
+        # SQLite
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        ''')
     conn.commit()
     conn.close()
 
@@ -30,35 +57,53 @@ def login():
     username = request.form['username']
     password = request.form['password']
 
-    conn = sqlite3.connect('users.db')
+    conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+    
+    if os.environ.get("DATABASE_URL"):
+        # PostgreSQL uses %s placeholders
+        c.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
+    else:
+        c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+    
     user = c.fetchone()
     conn.close()
 
     if user:
-        return f"✅ Welcome {username}! You have logged in successfully."
+        session['user'] = username
+        flash(f"✅ Welcome {username}! You have logged in successfully.", "success")
+        return redirect(url_for('home'))
     else:
-        return "❌ Invalid username or password."
+        flash("❌ Invalid username or password.", "error")
+        return redirect(url_for('home'))
 
 @app.route('/register', methods=['POST'])
 def register():
     username = request.form['username']
     password = request.form['password']
 
-    conn = sqlite3.connect('users.db')
+    conn = get_conn()
     c = conn.cursor()
+    
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        if os.environ.get("DATABASE_URL"):
+            c.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, password))
+        else:
+            c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
         conn.commit()
-        message = "✅ Registration successful! You can now login."
-    except sqlite3.IntegrityError:
-        message = "⚠️ Username already exists. Try a different one."
+        flash("✅ Registration successful! You can now login.", "success")
+    except Exception as e:
+        flash("⚠️ Username already exists or error occurred.", "error")
     conn.close()
-    return message
+    return redirect(url_for('home'))
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    flash("🔒 You have been logged out.", "info")
+    return redirect(url_for('home'))
 
 # ---------------- Run App ----------------
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get("PORT", 5000))  # for deployment
     app.run(host='0.0.0.0', port=port, debug=True)
